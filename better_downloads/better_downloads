@@ -1,0 +1,96 @@
+#!/usr/bin/env python3
+import os
+import re
+from pathlib import Path
+
+import pyinotify
+
+home = Path.home()
+downloads = home / "Downloads/"
+
+destinations = [
+    ({"pdf"}, downloads / "pdf/"),
+    ({"csv", "json", "tsv"}, downloads / "data/"),
+    ({"py", "ipynb"}, downloads / "code/"),
+    ({"bz2", "zip", "7z", "rar"}, downloads / "archives/"),
+    ({"jpg", "png"}, downloads / "imgs/"),
+    ({"srt"}, downloads / "subs/"),
+]
+
+
+def get_new_name(path):
+    """
+    Given a path emulates the naming scheme of Firefox. If it exists
+    adds an ordinal number btw parenthesis.
+    """
+    directory = path.parent
+    name = path.with_suffix("").name
+
+    r = name + "\(\d+\)" + path.suffix + "$"
+    # other files with name <name>\(\d+\).<ext>$ sorted by number
+    others = sorted(
+        [
+            fname
+            for fname in directory.glob(name + "(*)" + path.suffix)
+            if re.match(r, fname.name)
+        ]
+    )
+
+    if not others:
+        # Safe to name it <name>(1).<ext>
+        return directory / (path.with_suffix("").name + "(1)" + path.suffix)
+    else:
+        # Last name of the form <name>(n).<ext>
+        last = others[-1]
+
+        r_open_par_i = None     # Index of first open parenthesis from right
+        r_closed_par_i = None   # Index of first closed parenthesis from right
+        for i in range(len(last.name) - 1, -1, -1):
+            if last.name[i] == ")":
+                r_closed_par_i = i
+            if last.name[i] == "(":
+                r_open_par_i = i + 1
+                break
+
+        n = int(last.name[r_open_par_i : r_closed_par_i]) + 1
+
+        # New name <name>(n + 1).<ext>
+        return directory / (last.with_suffix("").name[: r_open_par_i] + str(n) + ")" + path.suffix)
+
+
+def better_downloads(p):
+    try:
+        ext = p.suffix
+        if ext != "":
+            ext = ext[1:]
+            for extensions, destination in destinations:
+                if ext in extensions:
+                    dest = destination / p.name
+                    if dest.exists():
+                        dest = get_new_name(dest)
+                    os.rename(p, dest)
+    except Exception:
+        pass
+        # tried ¯\_(ツ)_/¯
+
+
+class EventHandler(pyinotify.ProcessEvent):
+    def process_default(self, event):
+        better_downloads(Path(event.pathname))
+
+
+if __name__ == "__main__":
+    for _, d in destinations:
+        if not d.exists():
+            d.mkdir()
+        if not d.is_dir():
+            print(d.name + " is a file. Delete or rename it to proceed.")
+
+    wm = pyinotify.WatchManager()
+    mask = pyinotify.IN_ATTRIB
+
+    handler = EventHandler()
+    notifier = pyinotify.Notifier(wm, handler)
+    wdd = wm.add_watch(str(downloads), mask, rec=False)
+
+    notifier.loop(daemonize=True, pid_file="/tmp/better_downloads.pid")
